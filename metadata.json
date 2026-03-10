@@ -1,0 +1,5 @@
+{
+  "name": "SonicStream Radio",
+  "description": "A modern, immersive radio application to discover and stream local and global radio stations with real-time audio visualization.",
+  "requestFramePermissions": ["geolocation"]
+}
