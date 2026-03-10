@@ -1,0 +1,58 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile and settings",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "displayName": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "user"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "role"]
+    },
+    "Favorite": {
+      "title": "Favorite",
+      "description": "A favorited radio station",
+      "type": "object",
+      "properties": {
+        "stationuuid": { "type": "string" },
+        "name": { "type": "string" },
+        "frequency": { "type": "number" },
+        "favicon": { "type": "string" },
+        "url_resolved": { "type": "string" },
+        "addedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["stationuuid", "name", "frequency", "addedAt"]
+    },
+    "RecentStation": {
+      "title": "Recent Station",
+      "description": "A recently played radio station",
+      "type": "object",
+      "properties": {
+        "stationuuid": { "type": "string" },
+        "name": { "type": "string" },
+        "frequency": { "type": "number" },
+        "favicon": { "type": "string" },
+        "playedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["stationuuid", "name", "frequency", "playedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profile documents"
+    },
+    "/users/{userId}/favorites/{favoriteId}": {
+      "schema": "Favorite",
+      "description": "User's favorite stations"
+    },
+    "/users/{userId}/recents/{recentId}": {
+      "schema": "RecentStation",
+      "description": "User's recently played stations"
+    }
+  }
+}

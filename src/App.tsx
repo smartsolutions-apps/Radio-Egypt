@@ -29,8 +29,39 @@ import { LyricsService } from './services/LyricsService';
 import { TunerDial } from './components/TunerDial';
 import { audioEngine } from './services/AudioEngine';
 import { cn } from './lib/utils';
+import { 
+  auth, 
+  db, 
+  googleProvider, 
+  signInWithPopup, 
+  signOut, 
+  onAuthStateChanged, 
+  collection, 
+  doc, 
+  setDoc, 
+  deleteDoc, 
+  onSnapshot, 
+  query, 
+  orderBy, 
+  serverTimestamp, 
+  handleFirestoreError, 
+  OperationType,
+  FirebaseUser,
+  Timestamp
+} from './firebase';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 export default function App() {
+  return (
+    <ErrorBoundary>
+      <RadioApp />
+    </ErrorBoundary>
+  );
+}
+
+function RadioApp() {
+  const [user, setUser] = useState<FirebaseUser | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
   const [stations, setStations] = useState<RadioStation[]>([]);
   const [currentStation, setCurrentStation] = useState<RadioStation | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -58,13 +89,68 @@ export default function App() {
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
+  // Auth Listener
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setIsAuthReady(true);
+      
+      if (currentUser) {
+        // Create/Update user profile
+        const userRef = doc(db, 'users', currentUser.uid);
+        setDoc(userRef, {
+          uid: currentUser.uid,
+          email: currentUser.email,
+          displayName: currentUser.displayName,
+          role: 'user', // Default role
+          createdAt: serverTimestamp()
+        }, { merge: true }).catch(err => handleFirestoreError(err, OperationType.WRITE, `users/${currentUser.uid}`));
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Firestore Sync: Favorites
+  useEffect(() => {
+    if (!user || !isAuthReady) {
+      setFavorites([]);
+      return;
+    }
+
+    const favsRef = collection(db, 'users', user.uid, 'favorites');
+    const q = query(favsRef, orderBy('addedAt', 'desc'));
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const favIds = snapshot.docs.map(doc => doc.data().stationuuid);
+      setFavorites(favIds);
+    }, (err) => handleFirestoreError(err, OperationType.LIST, `users/${user.uid}/favorites`));
+
+    return () => unsubscribe();
+  }, [user, isAuthReady]);
+
+  // Firestore Sync: Recents
+  useEffect(() => {
+    if (!user || !isAuthReady) {
+      setRecentStations([]);
+      return;
+    }
+
+    const recentsRef = collection(db, 'users', user.uid, 'recents');
+    const q = query(recentsRef, orderBy('playedAt', 'desc'));
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const recents = snapshot.docs.map(doc => ({
+        ...doc.data(),
+        playedAt: (doc.data().playedAt as Timestamp)?.toDate()
+      } as any as RadioStation));
+      setRecentStations(recents);
+    }, (err) => handleFirestoreError(err, OperationType.LIST, `users/${user.uid}/recents`));
+
+    return () => unsubscribe();
+  }, [user, isAuthReady]);
+
   useEffect(() => {
     loadStations();
-    const savedFavorites = localStorage.getItem('radio-favorites');
-    if (savedFavorites) setFavorites(JSON.parse(savedFavorites));
-    
-    const savedRecents = localStorage.getItem('radio-recents');
-    if (savedRecents) setRecentStations(JSON.parse(savedRecents));
   }, []);
 
   // Signal Strength & Audio Engine Integration
@@ -204,14 +290,21 @@ export default function App() {
     setIsPlaying(!isPlaying);
   };
 
-  const playStation = (station: RadioStation) => {
+  const playStation = async (station: RadioStation) => {
     setCurrentStation(station);
     setIsPlaying(true);
     
-    // Add to recents
-    const newRecents = [station, ...recentStations.filter(s => s.stationuuid !== station.stationuuid)].slice(0, 10);
-    setRecentStations(newRecents);
-    localStorage.setItem('radio-recents', JSON.stringify(newRecents));
+    // Add to recents in Firestore
+    if (user) {
+      const recentRef = doc(db, 'users', user.uid, 'recents', station.stationuuid);
+      setDoc(recentRef, {
+        stationuuid: station.stationuuid,
+        name: station.name,
+        frequency: station.frequency,
+        favicon: station.favicon || null,
+        playedAt: serverTimestamp()
+      }).catch(err => handleFirestoreError(err, OperationType.WRITE, `users/${user.uid}/recents/${station.stationuuid}`));
+    }
 
     if (audioRef.current) {
       audioRef.current.src = station.url_resolved;
@@ -224,10 +317,47 @@ export default function App() {
     if (navigator.vibrate) navigator.vibrate(10);
   };
 
-  const toggleFavorite = (id: string) => {
-    const newFavorites = favorites.includes(id) ? favorites.filter(f => f !== id) : [...favorites, id];
-    setFavorites(newFavorites);
-    localStorage.setItem('radio-favorites', JSON.stringify(newFavorites));
+  const toggleFavorite = async (station: RadioStation) => {
+    if (!user) {
+      setError("Please login to save favorites.");
+      return;
+    }
+
+    const isFav = favorites.includes(station.stationuuid);
+    const favRef = doc(db, 'users', user.uid, 'favorites', station.stationuuid);
+
+    try {
+      if (isFav) {
+        await deleteDoc(favRef);
+      } else {
+        await setDoc(favRef, {
+          stationuuid: station.stationuuid,
+          name: station.name,
+          frequency: station.frequency,
+          favicon: station.favicon || null,
+          url_resolved: station.url_resolved,
+          addedAt: serverTimestamp()
+        });
+      }
+    } catch (err) {
+      handleFirestoreError(err, isFav ? OperationType.DELETE : OperationType.WRITE, `users/${user.uid}/favorites/${station.stationuuid}`);
+    }
+  };
+
+  const handleLogin = async () => {
+    try {
+      await signInWithPopup(auth, googleProvider);
+    } catch (err) {
+      setError("Login failed.");
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+    } catch (err) {
+      setError("Logout failed.");
+    }
   };
 
   const fetchLyrics = async () => {
@@ -283,13 +413,18 @@ export default function App() {
               <Search size={24} />
             </button>
             <button 
-              onClick={() => setShowFavorites(true)}
+              onClick={() => currentStation && toggleFavorite(currentStation)}
               className={cn("p-2", favorites.includes(currentStation?.stationuuid || '') ? "text-red-500" : "text-gray-300")}
             >
               <Star size={28} fill={favorites.includes(currentStation?.stationuuid || '') ? "currentColor" : "none"} />
             </button>
           </div>
-          <button className="text-red-500 font-bold text-sm uppercase tracking-wider">Upgrade</button>
+          <button 
+            onClick={user ? handleLogout : handleLogin}
+            className="text-red-500 font-bold text-sm uppercase tracking-wider"
+          >
+            {user ? 'Logout' : 'Login'}
+          </button>
         </div>
 
         {/* Main Frequency Display */}
@@ -487,7 +622,7 @@ export default function App() {
                       <button 
                         onClick={(e) => {
                           e.stopPropagation();
-                          toggleFavorite(station.stationuuid);
+                          toggleFavorite(station);
                         }}
                         className="p-2 text-red-500"
                       >
@@ -513,13 +648,29 @@ export default function App() {
           >
             <div className="bg-white w-full max-w-sm rounded-[2.5rem] p-8 shadow-2xl">
               <div className="flex items-center justify-between mb-8">
-                <h3 className="text-2xl font-bold text-gray-800">Utilities</h3>
+                <div className="flex items-center gap-3">
+                  {user?.photoURL && (
+                    <img src={user.photoURL} alt="" className="w-10 h-10 rounded-full border-2 border-red-500" />
+                  )}
+                  <div>
+                    <h3 className="text-xl font-bold text-gray-800">{user?.displayName || 'Utilities'}</h3>
+                    {user && <p className="text-xs text-gray-400">{user.email}</p>}
+                  </div>
+                </div>
                 <button onClick={() => setShowSettings(false)} className="p-2 bg-gray-100 rounded-full">
                   <X size={20} />
                 </button>
               </div>
 
               <div className="space-y-8">
+                {!user && (
+                  <button 
+                    onClick={handleLogin}
+                    className="w-full bg-red-500 text-white py-4 rounded-2xl font-bold flex items-center justify-center gap-2 hover:scale-[1.02] transition-all"
+                  >
+                    Login with Google
+                  </button>
+                )}
                 {/* Sleep Timer */}
                 <div>
                   <label className="text-sm font-bold text-gray-400 uppercase tracking-widest mb-4 block">Sleep Timer</label>

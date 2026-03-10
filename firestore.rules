@@ -1,0 +1,119 @@
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: /users/{userId}
+// Fields:
+//   - uid: string (required)
+//   - email: string (required, email format)
+//   - displayName: string (optional)
+//   - role: string (required, enum: ['admin', 'user'])
+//   - createdAt: timestamp (required)
+//
+// Collection: /users/{userId}/favorites/{favoriteId}
+// Fields:
+//   - stationuuid: string (required)
+//   - name: string (required)
+//   - frequency: number (required)
+//   - favicon: string (optional)
+//   - url_resolved: string (optional)
+//   - addedAt: timestamp (required)
+//
+// Collection: /users/{userId}/recents/{recentId}
+// Fields:
+//   - stationuuid: string (required)
+//   - name: string (required)
+//   - frequency: number (required)
+//   - favicon: string (optional)
+//   - playedAt: timestamp (required)
+//
+// ===============================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "mywonderbooks@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return hasOnlyAllowedFields(['uid', 'email', 'displayName', 'role', 'createdAt']) &&
+             data.uid == request.auth.uid &&
+             isValidEmail(data.email) &&
+             data.role in ['admin', 'user'] &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidFavorite(data) {
+      return hasOnlyAllowedFields(['stationuuid', 'name', 'frequency', 'favicon', 'url_resolved', 'addedAt']) &&
+             data.stationuuid is string && data.stationuuid.size() > 0 && data.stationuuid.size() < 100 &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 200 &&
+             data.frequency is number &&
+             data.addedAt is timestamp;
+    }
+
+    function isValidRecent(data) {
+      return hasOnlyAllowedFields(['stationuuid', 'name', 'frequency', 'favicon', 'playedAt']) &&
+             data.stationuuid is string && data.stationuuid.size() > 0 && data.stationuuid.size() < 100 &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 200 &&
+             data.frequency is number &&
+             data.playedAt is timestamp;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) && isValidUser(request.resource.data) && (request.resource.data.role == 'user' || isAdmin());
+      allow update: if isOwner(userId) && isValidUser(request.resource.data) && (request.resource.data.role == resource.data.role || isAdmin());
+      
+      match /favorites/{favoriteId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && isValidFavorite(request.resource.data);
+        allow update: if isOwner(userId) && isValidFavorite(request.resource.data);
+        allow delete: if isOwner(userId);
+      }
+
+      match /recents/{recentId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && isValidRecent(request.resource.data);
+        allow update: if isOwner(userId) && isValidRecent(request.resource.data);
+        allow delete: if isOwner(userId);
+      }
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
